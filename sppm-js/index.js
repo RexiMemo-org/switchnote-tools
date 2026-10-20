@@ -159,7 +159,7 @@ export async function readSppm(input, { legacyHmacKey = null } = {}) {
   r.take(4);
   const version = r.u16(), headerSize = r.u16(), totalBytes = r.u64(), expectedCrc = r.u32();
   const width = r.u16(), height = r.u16(), layerCount = r.u8(), paletteCount = r.u16(), fps = r.u8(), flags = r.u8(), frameCount = r.u32(), audioCount = r.u8(), reserved = r.u16();
-  if ((version !== 1 && version !== 2 && version !== 3) || headerSize !== HEADER_SIZE || totalBytes !== body.length || width !== WIDTH || height !== HEIGHT || layerCount !== 4 || paletteCount !== 256 || fps < 1 || fps > 30 || frameCount < 1 || frameCount > 9999 || audioCount > 4 || reserved !== 0 || ((version === 1 ? flags & ~3 : flags & ~15) !== 0)) fail("unsupported SPPM header");
+  if ((version !== 1 && version !== 2 && version !== 3) || headerSize !== HEADER_SIZE || totalBytes !== body.length || width !== WIDTH || height !== HEIGHT || layerCount !== 4 || paletteCount !== 256 || fps < 1 || fps > 30 || frameCount < 1 || frameCount > 9999 || audioCount > 4 || (version < 3 ? reserved !== 0 : reserved > 8) || ((version === 1 ? flags & ~3 : flags & ~15) !== 0)) fail("unsupported SPPM header");
   if (crc32(body.subarray(HEADER_SIZE)) !== expectedCrc) fail("payload CRC mismatch");
 
   const paletteBytes = r.take(256 * 4), palette = new Array(256);
@@ -167,7 +167,9 @@ export async function readSppm(input, { legacyHmacKey = null } = {}) {
   const metadata = {
     title: r.string(256), description: r.string(4096), authorName: r.string(128), originalAuthorName: r.string(128), lastEditorName: r.string(128),
     authorFsid: r.id(), originalAuthorFsid: r.id(), lastEditorFsid: r.id(), currentId: r.id(), rootId: r.id(), parentId: r.id(true),
-    createdUnixSeconds: r.u64(), modifiedUnixSeconds: r.u64(), coverFrame: r.u32(), width, height, fps,
+    createdUnixSeconds: r.u64(), modifiedUnixSeconds: r.u64(), coverFrame: r.u32(), width, height,
+    speed: version >= 3 ? reserved : 0, nominalFps: fps,
+    fps: version >= 3 && reserved >= 1 ? [0, 0.4985, 1, 2, 4, 5.9972, 11.986, 19.9459, 29.9275][reserved] : fps,
     locked: !!(flags & 1), allowSpinoffs: !!(flags & 2), bgmFollowsSpeed: version === 1 || !!(flags & 4), loopPlayback: version === 1 ? true : !(flags & 8),
     frameCount, audioTrackCount: audioCount, formatVersion: version, signature: signature.status,
   };
@@ -201,7 +203,7 @@ export async function readSppm(input, { legacyHmacKey = null } = {}) {
   const audioTracks = [];
   let audioSamples = 0;
   for (let ti = 0; ti < audioCount; ti++) {
-    const index = r.u8(), channels = r.u8(), referenceFps = version >= 2 ? r.u8() : 0, sampleRate = r.u32(), name = r.string(64), triggerCount = r.u16();
+    const index = r.u8(), channels = r.u8(), storedReference = version >= 2 ? r.u8() : 0, sampleRate = r.u32(), name = r.string(64), triggerCount = r.u16();
     if (index !== ti || (channels !== 1 && channels !== 2) || sampleRate < 8000 || sampleRate > 48000 || triggerCount > frameCount || (ti === 0 && triggerCount !== 0)) fail("invalid audio metadata");
     const triggers = Array.from({ length: triggerCount }, () => r.u16());
     for (let i = 0; i < triggers.length; i++) if (triggers[i] >= frameCount || (i && triggers[i] <= triggers[i - 1])) fail("invalid sound-effect frame cues");
@@ -212,7 +214,10 @@ export async function readSppm(input, { legacyHmacKey = null } = {}) {
     const pcm = new Int16Array(sampleCount);
     const sampleView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
     for (let i = 0; i < sampleCount; i++) pcm[i] = sampleView.getInt16(i * 2, true);
-    audioTracks.push({ index, name, channels, referenceFps: ti === 0 && version === 1 ? fps : referenceFps, sampleRate, frameTriggers: triggers, pcm });
+    const referenceSpeed = version >= 3 && reserved !== 0 && ti === 0 ? storedReference : 0;
+    const referenceFps = version >= 3 && reserved !== 0 ? 0 : ti === 0 && version === 1 ? fps : storedReference;
+    if (version >= 3 && reserved !== 0 && (ti === 0 ? storedReference > 8 : storedReference !== 0)) fail("invalid audio speed metadata");
+    audioTracks.push({ index, name, channels, referenceFps, referenceSpeed, sampleRate, frameTriggers: triggers, pcm });
   }
   if (r.at !== body.length) fail("unexpected trailing bytes");
   return { width, height, palette, metadata, frames, audioTracks, signature };
@@ -333,7 +338,7 @@ export class SppmPlayer {
       }
       if (track.index === 0) {
         const source = this.audioContext.createBufferSource(); source.buffer = buffer;
-        if (this.note.metadata.bgmFollowsSpeed) source.playbackRate.value = fps / (track.referenceFps || fps);
+        if (this.note.metadata.bgmFollowsSpeed) source.playbackRate.value = fps / (track.referenceSpeed ? [0, 0.4985, 1, 2, 4, 5.9972, 11.986, 19.9459, 29.9275][track.referenceSpeed] : (track.referenceFps || fps));
         source.loop = !!this.loop; source.connect(this.audioContext.destination); source.start(start); this.sources.push(source);
       } else for (const cue of track.frameTriggers) {
         const source = this.audioContext.createBufferSource(); source.buffer = buffer; source.connect(this.audioContext.destination);

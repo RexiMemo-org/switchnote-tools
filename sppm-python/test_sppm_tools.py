@@ -9,7 +9,7 @@ from pathlib import Path
 from sppm_tools import get_sppm_metadata, get_sppm_thumbnail, read_sppm, sppm_to_mp4
 
 
-def fixture() -> bytes:
+def fixture(version: int = 2, speed: int = 0) -> bytes:
     payload = bytearray()
     palette = bytearray(256 * 4)
     palette[4:8] = bytes((255, 0, 0, 255))
@@ -37,15 +37,15 @@ def fixture() -> bytes:
         payload.extend(encoded)
 
     pcm = struct.pack("<800h", *([1200, -1200] * 400))
-    payload.extend(struct.pack("<BBB I", 0, 1, 12, 8000))
+    payload.extend(struct.pack("<BBB I", 0, 1, (6 if version >= 3 and speed else 12), 8000))
     text("BGM")
     payload.extend(struct.pack("<HII", 0, 800, zlib.crc32(pcm) & 0xffffffff))
     payload.extend(pcm)
 
     header = bytearray(b"SPPM")
-    header.extend(struct.pack("<HHQ I HH B H B B I B H", 2, 36, 36 + len(payload),
+    header.extend(struct.pack("<HHQ I HH B H B B I B H", version, 36, 36 + len(payload),
                               zlib.crc32(payload) & 0xffffffff, 640, 360, 4, 256,
-                              12, 2, 1, 1, 0))
+                              12, 2, 1, 1, speed))
     assert len(header) == 36
     return bytes(header + payload)
 
@@ -74,6 +74,12 @@ class SppmToolTests(unittest.TestCase):
         broken[80] ^= 1
         with self.assertRaisesRegex(ValueError, "CRC"):
             read_sppm(broken)
+
+    def test_reads_dsi_speed_indices_using_measured_rates(self):
+        note = read_sppm(fixture(version=3, speed=1))
+        self.assertEqual(note.metadata["speed"], 1)
+        self.assertEqual(note.metadata["fps"], 0.4985)
+        self.assertEqual(note.audio_tracks[0].reference_speed, 6)
 
 
 if __name__ == "__main__":

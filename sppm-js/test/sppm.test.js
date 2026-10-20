@@ -7,14 +7,14 @@ function crc32(bytes) {
   for (const b of bytes) { crc ^= b; for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
   return (crc ^ 0xffffffff) >>> 0;
 }
-function fixture() {
+function fixture(version = 2, speed = 0) {
   const parts = [];
   const u8 = n => parts.push(Buffer.from([n & 255]));
   const u16 = n => { const b = Buffer.alloc(2); b.writeUInt16LE(n); parts.push(b); };
   const u32 = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n); parts.push(b); };
   const u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); parts.push(b); };
   const str = s => { const b = Buffer.from(s); u16(b.length); parts.push(b); };
-  parts.push(Buffer.from("SPPM")); u16(2); u16(36); u64(0); u32(0); u16(640); u16(360); u8(4); u16(256); u8(12); u8(2); u32(1); u8(0); u16(0);
+  parts.push(Buffer.from("SPPM")); u16(version); u16(36); u64(0); u32(0); u16(640); u16(360); u8(4); u16(256); u8(12); u8(2); u32(1); u8(0); u16(speed);
   const palette = Buffer.alloc(1024); palette.set([255, 0, 0, 255], 4); parts.push(palette);
   ["JS fixture", "", "Tester", "Tester", "Tester"].forEach(str);
   ["1111111111111111", "1111111111111111", "1111111111111111", "2222222222222222", "2222222222222222", "0000000000000000"].forEach(id => parts.push(Buffer.from(id)));
@@ -44,4 +44,12 @@ test("reads metadata, validates RLE and renders a white-backed cover thumbnail",
 test("rejects damaged payload CRC", async () => {
   const bytes = fixture(); bytes[80] ^= 1;
   await assert.rejects(readSppm(bytes), /CRC/);
+});
+
+test("reads DSi speed indices using the measured frame rates", async () => {
+  const bytes = fixture(3, 1);
+  const note = await readSppm(bytes);
+  assert.equal(note.metadata.speed, 1);
+  assert.equal(note.metadata.fps, 0.4985);
+  assert.equal(note.metadata.nominalFps, 12);
 });

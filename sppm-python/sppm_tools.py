@@ -40,6 +40,7 @@ class AudioTrack:
     name: str
     frame_triggers: list[int]
     pcm: array.array
+    reference_speed: int = 0
 
 
 @dataclass
@@ -208,7 +209,7 @@ def read_sppm(source: Input, *, legacy_hmac_key: Optional[bytes] = None) -> Sppm
     frame_count, audio_count, reserved = r.u32(), r.u8(), r.u16()
     if (version not in (1, 2, 3) or header_size != HEADER_SIZE or total_size != len(body) or
         width != WIDTH or height != HEIGHT or layer_count != 4 or palette_count != 256 or
-        not 1 <= fps <= 30 or not 1 <= frame_count <= 9999 or audio_count > 4 or reserved != 0 or
+        not 1 <= fps <= 30 or not 1 <= frame_count <= 9999 or audio_count > 4 or (reserved != 0 if version < 3 else reserved > 8) or
         (flags & ~(3 if version == 1 else 15))):
         raise SppmError("unsupported SPPM header")
     if zlib.crc32(body[HEADER_SIZE:]) & 0xFFFFFFFF != expected_crc:
@@ -228,7 +229,10 @@ def read_sppm(source: Input, *, legacy_hmac_key: Optional[bytes] = None) -> Sppm
         "authorFsid": r.id(), "originalAuthorFsid": r.id(), "lastEditorFsid": r.id(),
         "currentId": r.id(), "rootId": r.id(), "parentId": r.id(True),
         "createdUnixSeconds": r.u64(), "modifiedUnixSeconds": r.u64(), "coverFrame": r.u32(),
-        "width": width, "height": height, "fps": fps, "locked": bool(flags & 1),
+        "width": width, "height": height,
+        "speed": reserved if version >= 3 else 0, "nominalFps": fps,
+        "fps": (0.4985, 1.0, 2.0, 4.0, 5.9972, 11.986, 19.9459, 29.9275)[reserved - 1] if version >= 3 and reserved else fps,
+        "locked": bool(flags & 1),
         "allowSpinoffs": bool(flags & 2), "bgmFollowsSpeed": version == 1 or bool(flags & 4),
         "loopPlayback": True if version == 1 else not bool(flags & 8),
         "frameCount": frame_count, "audioTrackCount": audio_count, "formatVersion": version,
@@ -280,8 +284,12 @@ def read_sppm(source: Input, *, legacy_hmac_key: Optional[bytes] = None) -> Sppm
         pcm.frombytes(raw_pcm)
         if struct.pack("=H", 1) != b"\x01\x00":
             pcm.byteswap()
-        tracks.append(AudioTrack(index, channels, fps if ti == 0 and version == 1 else reference_fps,
-                                 sample_rate, name, cues, pcm))
+        reference_speed = reference_fps if version >= 3 and reserved != 0 and ti == 0 else 0
+        if version >= 3 and reserved != 0 and (reference_speed > 8 or (ti > 0 and reference_fps != 0)):
+            raise SppmError("invalid audio speed metadata")
+        legacy_reference_fps = (fps if ti == 0 else reference_fps) if version < 3 or reserved == 0 else 0
+        tracks.append(AudioTrack(index, channels, legacy_reference_fps,
+                                 sample_rate, name, cues, pcm, reference_speed))
     if r.at != body_end:
         raise SppmError("unexpected trailing bytes")
     return SppmNote(meta, palette, frames, tracks, signature)
@@ -358,7 +366,9 @@ def _mix_wav(note: SppmNote, wav_path: str, sample_rate: int = 48000, chunk_seco
             times = (base + np.arange(count, dtype=np.float64)) / sample_rate
             for track, source in sources:
                 if track.index == 0:
-                    rate = track.sample_rate * (fps / (track.reference_fps or fps) if note.metadata["bgmFollowsSpeed"] else 1.0)
+                    reference_fps = ((0.4985, 1.0, 2.0, 4.0, 5.9972, 11.986, 19.9459, 29.9275)[track.reference_speed - 1]
+                                     if track.reference_speed else (track.reference_fps or fps))
+                    rate = track.sample_rate * (fps / reference_fps if note.metadata["bgmFollowsSpeed"] else 1.0)
                     positions = times * rate
                     valid = np.ones(count, dtype=bool) if note.metadata["loopPlayback"] else positions < len(source)
                     if note.metadata["loopPlayback"]:
