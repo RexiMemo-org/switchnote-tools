@@ -1,0 +1,4 @@
+Pillow>=10.0
+numpy>=1.24
+# Optional: install this to verify current SPP3 Ed25519 signatures.
+# cryptography>=41.0

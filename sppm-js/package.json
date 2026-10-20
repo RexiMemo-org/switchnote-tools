@@ -1,0 +1,10 @@
+{
+  "name": "@switchnote/switchnote-tools",
+  "version": "1.0.0",
+  "description": "Read, verify, play, thumbnail, and convert Switchnote SPPM files",
+  "type": "module",
+  "exports": "./index.js",
+  "scripts": { "test": "node ./test/sppm.test.js" },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}
